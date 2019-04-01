@@ -2,8 +2,9 @@
 var record = sessionStorage;
 var status = false;
 
+
 chrome.contextMenus.create({
-    title: "Start Sensinfor",
+    title: "Start Sensinfor",       
     id: "Sensinfor",
     onclick: function(){
         if (status == 'true') {
@@ -111,6 +112,35 @@ function show(title, content, tagname) {
   };
 }
 
+function kindeditor_finder(protocol, host, port, path){
+  var kindeditor_url = protocol + "://" + host + path + "kindeditor/kindeditor.js";
+    if(port){
+      kindeditor_url = protocol + "://" + host + ":" + port + path + "kindeditor/kindeditor.js";
+    }
+   $.ajax({
+      type: "GET",
+      url : kindeditor_url,
+      complete: function(xmlhttp) { 
+        if (xmlhttp.readyState == 4) { 
+          if (xmlhttp.status == 200) {  
+                var responseText = xmlhttp.responseText;
+                if(responseText){
+                  //kindeditor 4.1.11版本存在上传txt,html漏洞
+                  var match = responseText.match(/(?<=4\.1\.)\d{1,2}/);
+                  if (!match) {
+                    match = responseText.match(/4.1/);
+                  }
+                  if(match && match<12 || match && match === '4.1'){
+                    updateIcon("fire");
+                    var text = '检测kindeditor下默认目录（aps.net/asp/jsp/php）是否存在upload_json文件'
+                    show("kindeditor文件上传", kindeditor_url + " :)\n" + text, kindeditor_url);
+                  }
+                }
+          }
+        }
+      },
+  });
+}
 
 function gitfinder(protocol, host, port, path){
   var giturl = protocol + "://" + host + path + ".git/config";
@@ -241,7 +271,7 @@ function backupfinder_zip(protocol, host, port, path, filename){
             //状态码
           if (xmlhttp.status == 200) {  
                 var ct=xmlhttp.getResponseHeader("Content-Type");
-                if(ct == "application/zip"){
+                if(ct == "application/zip" || ct == "application/x-zip-compressed"){
                     updateIcon("fire");
                     show("Maybe a backup file find", backupURL_zip, backupURL_zip);
                 }
@@ -249,6 +279,32 @@ function backupfinder_zip(protocol, host, port, path, filename){
         }
       },
   });
+}
+
+ //find rar backup file
+function backupfinder_rar(protocol, host, port, path, filename){
+  var backupURL_rar =protocol + "://" + host + path + filename + ".rar";
+  if(port){
+    backupURL_rar =protocol + "://" + host + ":" + port + path + filename + ".rar";
+  }
+ 
+  $.ajax({
+    type: "HEAD",
+    url : backupURL_rar,
+    complete: function(xmlhttp) { 
+      //完成交互
+      if (xmlhttp.readyState == 4) { 
+          //状态码
+        if (xmlhttp.status == 200) {  
+              var ct=xmlhttp.getResponseHeader("Content-Type");
+              if(ct == "application/octet-stream"){
+                  updateIcon("fire");
+                  show("Maybe a backup file find", backupURL_rar, backupURL_rar);
+              }
+          }
+      }
+    },
+});
 }
 
 //find tar.gz backup file
@@ -365,12 +421,20 @@ function getPathName(path, file){
     return tmp_path;
 }
 
+function fileUploadFind(protocol,host, port, path){
+  //文件上传
+  if (!getStorage(protocol,host, port, path)) {
+    kindeditor_finder(protocol, host, port, path);
+    setStorage(protocol,host, port, path);
+  }
+}
 
 function leakFileFind(protocol,host, port, path){
     //文件泄露
     //phpinfo文件
     var phpinfoFilenameArr = new Array('1', 'php', 'phpinfo', 'test', 'info');
     if (!getStorage(protocol,host, port, path)) {
+          kindeditor_finder(protocol, host, port, path);
           bash(protocol,host,port,path);
           gitfinder(protocol,host, port, path);
           svnfinder(protocol,host,port,path);
@@ -386,13 +450,19 @@ function leakFileFind(protocol,host, port, path){
 
 function backupfileFind(protocol, host, port, path, OnlyPathName) {
     //备份文件
-    var backFilenameArr = new Array('backup', 'www', '2017', '2018', 'back', 'upload', '1')
+    // www.baidu.com 获取 baidu.com
+    var Top_level_domain =  host.replace(/(www\.)?(.*)/,"$2");
+    // www.baidu.com 获取 baidu
+    var web_domain = Top_level_domain.split('.')[0];
+    var backFilenameArr = new Array('wwwroot', 'backup', 'www', '2017', '2018', 'back', 'upload', '1', 'web', host, Top_level_domain, web_domain)
     if (!getStorage(protocol, host, port, path + 'backupFind')) {
       for (var i = backFilenameArr.length - 1; i >= 0; i--) {
         backupfinder_zip(protocol, host, port, path, backFilenameArr[i]);
+        backupfinder_rar(protocol, host, port, path, backFilenameArr[i]);
         backupfinder_tar_gz(protocol, host, port, path, backFilenameArr[i]);
       }
       backupfinder_zip(protocol, host, port, path, '../' + OnlyPathName);
+      backupfinder_rar(protocol, host, port, path, '../' + OnlyPathName);
       backupfinder_tar_gz(protocol, host, port, path, '../' + OnlyPathName);
       setStorage(protocol, host, port, path + 'backupFind');
     }
@@ -407,11 +477,12 @@ function startScan(url) {
     var file = parsedURL.file;
 
     pathAry = getPathName(path, file);
-    //
     if (pathAry.length == 1) {
         //没有子目录
         leakFileFind(protocol, host, port, '/');
         backupfileFind(protocol, host, port, '/', host);
+        //这个必须放后面，否则有bug(检测不到其他)
+        fileUploadFind(protocol, host, port, '/');
     } else if(pathAry.length > 1 && pathAry[0] != '.git' && pathAry[0] != '.svn'){
         //探测一级目录
         leakFileFind(protocol, host, port, '/');
@@ -420,8 +491,8 @@ function startScan(url) {
         backupfileFind(protocol, host, port, '/' + pathAry[0] + '/', pathAry[0]);
         //探测二级目录
         if (pathAry[1]) {
-            leakFileFind(protocol, host, port, '/' + pathAry[0] + '/' + pathAry[1] + '/');
-            backupfileFind(protocol, host, port, '/' + pathAry[0] + '/' + pathAry[1] + '/', pathAry[1]);
+          leakFileFind(protocol, host, port, '/' + pathAry[0] + '/' + pathAry[1] + '/');
+          backupfileFind(protocol, host, port, '/' + pathAry[0] + '/' + pathAry[1] + '/', pathAry[1]);
         }
     }
 }
